@@ -7,7 +7,7 @@ namespace Netimobiledevice.Backup
 {
     internal sealed class DeviceLink : IDisposable
     {
-        private const int SERVICE_TIMEOUT = 180 * 1000;
+        private const int SERVICE_TIMEOUT = 300 * 1000;
 
         private readonly ServiceConnection _service;
 
@@ -33,7 +33,7 @@ namespace Netimobiledevice.Backup
 
         public async Task<ArrayNode> ReceiveMessage()
         {
-            PropertyNode? message = await _service.ReceivePlist();
+            PropertyNode? message = await _service.ReceivePlistAsync();
             if (message == null) {
                 return new ArrayNode();
             }

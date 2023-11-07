@@ -2,6 +2,7 @@
 using Netimobiledevice.Exceptions;
 using Netimobiledevice.Lockdown;
 using Netimobiledevice.Lockdown.Services;
+using Netimobiledevice.NotificationProxy;
 using Netimobiledevice.Plist;
 using Netimobiledevice.SpringBoardServices;
 using Netimobiledevice.Usbmuxd;
@@ -181,11 +182,11 @@ namespace Netimobiledevice.Backup
 
         private async Task AquireBackupLock()
         {
-            notificationProxyService?.Post(Notification.SyncWillStart);
+            notificationProxyService?.Post(SendableNotificaton.SyncWillStart);
             syncLock = afcService?.FileOpen("/com.apple.itunes.lock_sync", "r+") ?? 0;
 
             if (syncLock != 0) {
-                notificationProxyService?.Post(Notification.SyncLockRequest);
+                notificationProxyService?.Post(SendableNotificaton.SyncLockRequest);
                 for (int i = 0; i < 50; i++) {
                     bool lockAquired = false;
                     try {
@@ -206,7 +207,7 @@ namespace Netimobiledevice.Backup
                     }
 
                     if (lockAquired) {
-                        notificationProxyService?.Post(Notification.SyncDidStart);
+                        notificationProxyService?.Post(SendableNotificaton.SyncDidStart);
                         break;
                     }
                 }
@@ -241,6 +242,9 @@ namespace Netimobiledevice.Backup
         /// </summary>
         private async Task CreateBackup()
         {
+            Debug.WriteLine($"Starting backup of device {LockdownClient.GetValue("ProductType")?.AsStringNode().Value} v{LockdownClient.IOSVersion}");
+
+            // Reset everything in case we have called this more than once.
             lastStatus = null;
             InProgress = true;
             IsCancelling = false;
@@ -252,18 +256,12 @@ namespace Netimobiledevice.Backup
             terminatingException = null;
             snapshotState = SnapshotState.Uninitialized;
 
-            Debug.WriteLine($"Starting backup of device {LockdownClient.GetValue("ProductType")?.AsStringNode().Value} v{LockdownClient.IOSVersion}");
-
-            if (Directory.Exists(DeviceBackupPath)) {
-                Directory.Delete(DeviceBackupPath, true);
-            }
-            Directory.CreateDirectory(DeviceBackupPath);
-
             Debug.WriteLine($"Saving at {DeviceBackupPath}");
-            try {
-                IsEncrypted = LockdownClient.GetValue("com.apple.mobile.backup", "WillEncrypt")?.AsBooleanNode().Value ?? false;
-                Debug.WriteLine($"The backup will{(IsEncrypted ? null : " not")} be encrypted.");
 
+            IsEncrypted = LockdownClient.GetValue("com.apple.mobile.backup", "WillEncrypt")?.AsBooleanNode().Value ?? false;
+            Debug.WriteLine($"The backup will{(IsEncrypted ? null : " not")} be encrypted.");
+
+            try {
                 afcService = new AfcService(LockdownClient);
                 mobilebackup2Service = await Mobilebackup2Service.CreateAsync(LockdownClient);
                 notificationProxyService = new NotificationProxyService(LockdownClient);
@@ -274,10 +272,7 @@ namespace Netimobiledevice.Backup
                 DictionaryNode options = CreateBackupOptions();
                 mobilebackup2Service.SendRequest("Backup", LockdownClient.UDID, LockdownClient.UDID, options);
 
-                // iOS versions 15.7.1 and anything 16.1 or newer will require you to input a passcode before
-                // it can start a backup so we make sure to notify the user about this.
-                if ((LockdownClient.IOSVersion >= new Version(15, 7, 1) && LockdownClient.IOSVersion < new Version(16, 0)) ||
-                    LockdownClient.IOSVersion >= new Version(16, 1)) {
+                if (IsPasscodeRequiredBeforeBackup()) {
                     PasscodeRequiredForBackup?.Invoke(this, EventArgs.Empty);
                 }
 
@@ -406,35 +401,57 @@ namespace Netimobiledevice.Backup
         /// <returns>The application dictionary and array of applications bundle ids.</returns>
         private async Task<(DictionaryNode, ArrayNode)> CreateInstalledAppList()
         {
-            InstallationProxyService installationProxyService = new InstallationProxyService(LockdownClient);
-            SpringBoardServicesService springBoardServicesService = new SpringBoardServicesService(LockdownClient);
-
             DictionaryNode appDict = new DictionaryNode();
             ArrayNode installedApps = new ArrayNode();
 
-            try {
-                ArrayNode apps = await installationProxyService.Browse(
-                new DictionaryNode() { { "ApplicationType", new StringNode("User") } },
-                new ArrayNode() { new StringNode("CFBundleIdentifier"), new StringNode("ApplicationSINF"), new StringNode("iTunesMetadata") });
-                foreach (DictionaryNode app in apps.Cast<DictionaryNode>()) {
-                    if (app.ContainsKey("CFBundleIdentifier")) {
-                        StringNode bundleId = app["CFBundleIdentifier"].AsStringNode();
-                        installedApps.Add(bundleId);
-                        if (app.ContainsKey("iTunesMetadata") && app.ContainsKey("ApplicationSINF")) {
-                            appDict.Add(bundleId.Value, new DictionaryNode() {
+            using (InstallationProxyService installationProxyService = new InstallationProxyService(LockdownClient)) {
+                using (SpringBoardServicesService springBoardServicesService = new SpringBoardServicesService(LockdownClient)) {
+                    try {
+                        ArrayNode apps = await installationProxyService.Browse(
+                        new DictionaryNode() { { "ApplicationType", new StringNode("User") } },
+                        new ArrayNode() { new StringNode("CFBundleIdentifier"), new StringNode("ApplicationSINF"), new StringNode("iTunesMetadata") });
+                        foreach (DictionaryNode app in apps.Cast<DictionaryNode>()) {
+                            if (app.ContainsKey("CFBundleIdentifier")) {
+                                StringNode bundleId = app["CFBundleIdentifier"].AsStringNode();
+                                installedApps.Add(bundleId);
+                                if (app.ContainsKey("iTunesMetadata") && app.ContainsKey("ApplicationSINF")) {
+                                    appDict.Add(bundleId.Value, new DictionaryNode() {
                                 { "ApplicationSINF", app["ApplicationSINF"] },
                                 { "iTunesMetadata", app["iTunesMetadata"] },
                                 { "PlaceholderIcon", springBoardServicesService.GetIconPNGData(bundleId.Value) },
                             });
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex) {
+                        Debug.WriteLine($"ERROR: Creating application list for Info.plist");
+                        Debug.WriteLine(ex);
+                    }
+                }
+            }
+            return (appDict, installedApps);
+        }
+
+        private bool IsPasscodeRequiredBeforeBackup()
+        {
+            // iOS versions 15.7.1 and anything 16.1 or newer will require you to input a passcode before
+            // it can start a backup so we make sure to notify the user about this.
+            if ((LockdownClient.IOSVersion >= new Version(15, 7, 1) && LockdownClient.IOSVersion < new Version(16, 0)) ||
+                LockdownClient.IOSVersion >= new Version(16, 1)) {
+                using (DiagnosticsService diagnosticsService = new DiagnosticsService(LockdownClient)) {
+                    string queryString = "PasswordConfigured";
+                    DictionaryNode queryResponse = diagnosticsService.MobileGestalt(new List<string>() { queryString });
+
+                    if (queryResponse.ContainsKey(queryString)) {
+                        bool passcodeSet = queryResponse[queryString].AsBooleanNode().Value;
+                        if (passcodeSet) {
+                            return true;
                         }
                     }
                 }
             }
-            catch (Exception ex) {
-                Debug.WriteLine($"ERROR: Creating application list for Info.plist");
-                Debug.WriteLine(ex);
-            }
-            return (appDict, installedApps);
+            return false;
         }
 
         /// <summary>
@@ -915,7 +932,7 @@ namespace Netimobiledevice.Backup
         /// </summary>
         protected virtual void OnBackupStarted()
         {
-            notificationProxyService?.Post(Notification.SyncDidStart);
+            notificationProxyService?.Post(SendableNotificaton.SyncDidStart);
             Started?.Invoke(this, EventArgs.Empty);
         }
 
@@ -960,6 +977,11 @@ namespace Netimobiledevice.Backup
             int errorCode = 0;
             string errorMessage = string.Empty;
             UpdateProgressForMessage(msg, 3);
+
+            if (!Directory.Exists(DeviceBackupPath)) {
+                Directory.CreateDirectory(DeviceBackupPath);
+            }
+
             DirectoryInfo newDir = new DirectoryInfo(Path.Combine(BackupDirectory, msg[1].AsStringNode().Value));
             if (!newDir.Exists) {
                 newDir.Create();
@@ -1003,6 +1025,13 @@ namespace Netimobiledevice.Backup
         protected virtual void OnFileReceiving(BackupFile file, byte[] fileData)
         {
             InvokeOnFileReceiving(new BackupFileEventArgs(file, fileData));
+
+            // Ensure the directory requested exists before writing to it.
+            string? pathDir = Path.GetDirectoryName(file.LocalPath);
+            if (!string.IsNullOrWhiteSpace(pathDir) && !Directory.Exists(file.LocalPath)) {
+                Directory.CreateDirectory(pathDir);
+            }
+
             using (FileStream stream = File.OpenWrite(file.LocalPath)) {
                 stream.Seek(0, SeekOrigin.End);
                 stream.Write(fileData, 0, fileData.Length);

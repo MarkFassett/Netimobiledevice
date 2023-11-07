@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -21,6 +22,9 @@ namespace Netimobiledevice.Lockdown
     /// </summary>
     public class ServiceConnection : IDisposable
     {
+        private const int MAX_READ_SIZE = 4096;
+
+        private readonly byte[] receiveBuffer = new byte[MAX_READ_SIZE];
         private readonly UsbmuxdDevice? muxDevice;
         private Stream networkStream;
 
@@ -51,58 +55,34 @@ namespace Netimobiledevice.Lockdown
             return new ServiceConnection(sock, targetDevice);
         }
 
-        private async Task<byte[]> ReceiveWithTimeout(int size)
+        /// <summary>
+        /// Receive a data block prefixed with a u32 length field
+        /// </summary>
+        /// <returns>The data without the u32 field length as a byte array</returns>
+        private byte[] ReceivePrefixed()
         {
-            if (size <= 0) {
+            byte[] sizeBytes = Receive(4);
+            if (sizeBytes.Length != 4) {
                 return Array.Empty<byte>();
             }
-            byte[] buffer = new byte[size];
 
-            int totalBytesRead = 0;
-            while (totalBytesRead < size) {
-                int bytesRead = 0;
-                if (networkStream.ReadTimeout != -1) {
-                    CancellationTokenSource cTokenSource = new CancellationTokenSource();
-                    CancellationToken cToken = cTokenSource.Token;
-
-                    Task<int> readTask = networkStream.ReadAsync(buffer, totalBytesRead, size - totalBytesRead, cToken);
-                    Task timeoutTask = Task.Delay(networkStream.ReadTimeout);
-
-                    await Task.Factory.ContinueWhenAny(new Task[] { readTask, timeoutTask }, (completedTask) => {
-                        // The timeout task was the first to complete
-                        if (completedTask == timeoutTask) {
-                            cTokenSource.Cancel();
-                            throw new TimeoutException("Timedout waiting for message from service");
-                        }
-                        // The readTask completed
-                        else {
-                            bytesRead = readTask.Result;
-                        }
-                    });
-                }
-                else {
-                    bytesRead = await networkStream.ReadAsync(buffer, totalBytesRead, size - totalBytesRead);
-                }
-
-                totalBytesRead += bytesRead;
-            }
-
-            return buffer;
+            int size = EndianBitConverter.BigEndian.ToInt32(sizeBytes, 0);
+            return Receive(size);
         }
 
         /// <summary>
         /// Receive a data block prefixed with a u32 length field
         /// </summary>
         /// <returns>The data without the u32 field length as a byte array</returns>
-        private async Task<byte[]> ReceivePrefixed()
+        private async Task<byte[]> ReceivePrefixedAsync(CancellationToken cancellationToken)
         {
-            byte[] sizeBytes = await ReceiveWithTimeout(4);
+            byte[] sizeBytes = await ReceiveAsync(4, cancellationToken);
             if (sizeBytes.Length != 4) {
                 return Array.Empty<byte>();
             }
 
             int size = EndianBitConverter.BigEndian.ToInt32(sizeBytes, 0);
-            return await ReceiveWithTimeout(size);
+            return await ReceiveAsync(size, cancellationToken);
         }
 
         private bool UserCertificateValidationCallback(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors sslPolicyErrors)
@@ -139,18 +119,75 @@ namespace Netimobiledevice.Lockdown
 
         public byte[] Receive(int length = 4096)
         {
-            return ReceiveWithTimeout(length).GetAwaiter().GetResult();
+            if (length <= 0) {
+                return Array.Empty<byte>();
+            }
+            List<byte> buffer = new List<byte>();
+
+            int totalBytesRead = 0;
+            while (totalBytesRead < length) {
+                int remainingSize = length - totalBytesRead;
+                int readSize = remainingSize;
+                if (remainingSize > MAX_READ_SIZE) {
+                    readSize = MAX_READ_SIZE;
+                }
+
+                int bytesRead = networkStream.Read(receiveBuffer, 0, readSize);
+                totalBytesRead += bytesRead;
+
+                buffer.AddRange(receiveBuffer.Take(bytesRead));
+            }
+
+            return buffer.ToArray();
         }
 
-        public async Task<byte[]> ReceiveAsync(int length = 4096)
+        public async Task<byte[]> ReceiveAsync(int length = 4096, CancellationToken cancellationToken = default)
         {
-            return await ReceiveWithTimeout(length);
+            if (length <= 0) {
+                return Array.Empty<byte>();
+            }
+            List<byte> buffer = new List<byte>();
+
+            int totalBytesRead = 0;
+            while (totalBytesRead < length) {
+                int remainingSize = length - totalBytesRead;
+                int readSize = remainingSize;
+                if (remainingSize > MAX_READ_SIZE) {
+                    readSize = MAX_READ_SIZE;
+                }
+
+                int bytesRead;
+                if (networkStream.ReadTimeout != -1) {
+                    Task<int> result = networkStream.ReadAsync(receiveBuffer, 0, readSize, cancellationToken);
+                    await Task.WhenAny(result, Task.Delay(networkStream.ReadTimeout, cancellationToken));
+                    if (!result.IsCompleted) {
+                        throw new TimeoutException("Timeout waiting for message from service");
+                    }
+                    bytesRead = await result;
+                }
+                else {
+                    bytesRead = await networkStream.ReadAsync(receiveBuffer, 0, readSize, cancellationToken);
+                }
+
+                totalBytesRead += bytesRead;
+                buffer.AddRange(receiveBuffer.Take(bytesRead));
+            }
+
+            return buffer.ToArray();
         }
 
-
-        public async Task<PropertyNode?> ReceivePlist()
+        public PropertyNode? ReceivePlist()
         {
-            byte[] plistBytes = await ReceivePrefixed();
+            byte[] plistBytes = ReceivePrefixed();
+            if (plistBytes.Length == 0) {
+                return null;
+            }
+            return PropertyList.LoadFromByteArray(plistBytes);
+        }
+
+        public async Task<PropertyNode?> ReceivePlistAsync()
+        {
+            byte[] plistBytes = await ReceivePrefixedAsync(CancellationToken.None);
             if (plistBytes.Length == 0) {
                 return null;
             }
@@ -192,7 +229,13 @@ namespace Netimobiledevice.Lockdown
         public PropertyNode? SendReceivePlist(PropertyNode data)
         {
             SendPlist(data);
-            return ReceivePlist().GetAwaiter().GetResult();
+            return ReceivePlist();
+        }
+
+        public async Task<PropertyNode?> SendReceivePlistAsync(PropertyNode data)
+        {
+            await SendPlistAsync(data);
+            return await ReceivePlistAsync();
         }
 
         /// <summary>
@@ -218,7 +261,7 @@ namespace Netimobiledevice.Lockdown
 
             networkStream.Flush();
 
-            SslStream sslStream = new SslStream(networkStream, true, UserCertificateValidationCallback, null, EncryptionPolicy.AllowNoEncryption);
+            SslStream sslStream = new SslStream(networkStream, true, UserCertificateValidationCallback, null, EncryptionPolicy.RequireEncryption);
             try {
                 // NOTE: For some reason we need to re-export and then import the cert again ¯\_(ツ)_/¯
                 // see this for more details: https://github.com/dotnet/runtime/issues/45680
