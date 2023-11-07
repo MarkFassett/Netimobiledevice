@@ -35,6 +35,13 @@ namespace Netimobiledevice.Backup
             "iTunesPrefs.plist"
         };
 
+        public static int ServiceTimeout { get; private set; } = 60 * 1000;
+
+        public static void SetTimeout(int seconds)
+        {
+            ServiceTimeout = seconds * 1000;
+        }
+
         /// <summary>
         /// The AFC service.
         /// </summary>
@@ -592,6 +599,17 @@ namespace Netimobiledevice.Backup
                     OnError(new Exception("Backing up the phone is denied by managing organisation"));
                     break;
                 }
+                case -104:
+                {
+                    DictionaryNode msgDict = msg[1].AsDictionaryNode();
+                    if (msgDict.TryGetValue("ErrorDescription", out PropertyNode errDescription))
+                    {
+                        var e = new Exception($"Error {resultCode}: {errDescription.AsStringNode().Value}");
+                        e.Data.Add("code", -104);
+                        OnError(e);
+                    }
+                    break;
+                }
                 case -207: {
                     OnError(new Exception("No backup encryption password set but is required by managing organisation"));
                     break;
@@ -842,7 +860,10 @@ namespace Netimobiledevice.Backup
             foreach (DriveInfo drive in DriveInfo.GetDrives()) {
                 try {
                     if (drive.IsReady && drive.Name == dir.Root.FullName) {
-                        return drive.AvailableFreeSpace;
+                        // We multiply available space by 2 because we filter the backup 
+                        // to only messages and attachments; as a result we will only
+                        // save a fraction of the total backup size. - BJG
+                        return drive.AvailableFreeSpace * 2;
                     }
                 }
                 catch (Exception ex) {
@@ -1081,7 +1102,14 @@ namespace Netimobiledevice.Backup
                     }
 
                     if (oldFile.Exists) {
-                        oldFile.MoveTo(newFile.FullName);
+                        try
+                        {
+                            oldFile.MoveTo(newFile.FullName);
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new Exception($"Failed to move file {oldFile.FullName} - {ex.Message}");
+                        }
                     }
                 }
             }
@@ -1135,7 +1163,7 @@ namespace Netimobiledevice.Backup
         protected virtual void OnSnapshotStateChanged(SnapshotState oldSnapshotState, SnapshotState newSnapshotState)
         {
             Debug.WriteLine($"Snapshot state changed: {newSnapshotState}");
-            OnStatus($"{newSnapshotState} ...");
+            OnStatus($"SnapshotStateChanged - {newSnapshotState}");
             if (newSnapshotState == SnapshotState.Finished) {
                 IsFinished = true;
             }

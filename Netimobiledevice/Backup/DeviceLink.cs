@@ -7,14 +7,14 @@ namespace Netimobiledevice.Backup
 {
     internal sealed class DeviceLink : IDisposable
     {
-        private const int SERVICE_TIMEOUT = 60 * 1000;
+        private const int SERVICE_TIMEOUT = 180 * 1000;
 
         private readonly ServiceConnection _service;
 
         public DeviceLink(ServiceConnection service)
         {
             _service = service;
-            _service.SetTimeout(SERVICE_TIMEOUT);
+            _service.SetTimeout(DeviceBackup.ServiceTimeout);
         }
 
         private void Disconnect()
@@ -62,7 +62,12 @@ namespace Netimobiledevice.Backup
                 new StringNode("DLVersionsOk"),
                 versionMajor
             });
+
             ArrayNode messageDeviceReady = await ReceiveMessage();
+
+            if(messageDeviceReady.Count == 0)
+                throw new Exception("Device link got no information back!");
+
             if (messageDeviceReady[0].AsStringNode().Value != "DLMessageDeviceReady") {
                 throw new Exception("Device link didn't return ready state");
             }
