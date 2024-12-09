@@ -24,7 +24,7 @@ namespace Netimobiledevice.Lockdown
     /// </summary>
     public class ServiceConnection : IDisposable
     {
-        private const int MAX_READ_SIZE = 4096;
+        private const int MAX_READ_SIZE = 32768; // MEF: Made bigger for perf reasons
 
         /// <summary>
         /// The internal logger
@@ -98,7 +98,9 @@ namespace Netimobiledevice.Lockdown
             if (length <= 0) {
                 return Array.Empty<byte>();
             }
-            List<byte> buffer = new List<byte>();
+
+
+            byte[] buffer = new byte[length]; // MEF: Use an array instead of a list to save on allocations
 
             int totalBytesRead = 0;
             while (totalBytesRead < length) {
@@ -108,16 +110,21 @@ namespace Netimobiledevice.Lockdown
                     readSize = MAX_READ_SIZE;
                 }
 
-                int bytesRead = networkStream.Read(receiveBuffer, 0, readSize);
-                if (bytesRead == 0) { // If we don't get any bytes, the network connection was broken
+                int bytesRead = networkStream.Read(buffer, totalBytesRead, readSize); // MEF: Must set the offset, since we are not just taking stuff
+
+                if (bytesRead == 0) {
+                    logger.LogInformation($"SeriviceConnection.Receive() read 0 bytes. Assuming network disconnect.");
                     break;
                 }
                 totalBytesRead += bytesRead;
-
-                buffer.AddRange(receiveBuffer.Take(bytesRead));
             }
 
-            return buffer.ToArray();
+            if (totalBytesRead < buffer.Length) // MEF: Shrink our array if necessary
+            {
+                Array.Resize(ref buffer, totalBytesRead);
+            }
+
+            return buffer;
         }
 
         public async Task<byte[]> ReceiveAsync(int length, CancellationToken cancellationToken)
@@ -151,7 +158,8 @@ namespace Netimobiledevice.Lockdown
                         throw new TimeoutException("Timeout waiting for message from service");
                     }
                     bytesRead = await result;
-                    if (bytesRead == 0) { // If we don't get any bytes, the network connection was broken
+                    if (bytesRead == 0) {
+                        logger.LogInformation($"SeriviceConnection.ReceiveAsync() read 0 bytes. Assuming network disconnect.");
                         break;
                     }
                 }
@@ -229,10 +237,9 @@ namespace Netimobiledevice.Lockdown
             byte[] plistBytes = PropertyList.SaveAsByteArray(data, format);
             byte[] lengthBytes = BitConverter.GetBytes(EndianBitConverter.BigEndian.ToInt32(BitConverter.GetBytes(plistBytes.Length), 0));
 
-            List<byte> payload = new List<byte>();
-            payload.AddRange(lengthBytes);
-            payload.AddRange(plistBytes);
-            Send(payload.ToArray());
+            // Match iOS and C traffic patterns as closely as possible.
+            Send(lengthBytes);
+            Send(plistBytes);
         }
 
         public async Task SendPlistAsync(PropertyNode data, PlistFormat format = PlistFormat.Xml, CancellationToken cancellationToken = default)
@@ -268,7 +275,7 @@ namespace Netimobiledevice.Lockdown
             networkStream.WriteTimeout = timeout;
         }
 
-        public void StartSSL(byte[] certData, byte[] privateKeyData)
+        public void StartSSL(byte[] certData, byte[] privateKeyData, string? host = null)
         {
             X509Certificate2 cert;
             string tmpPath = Path.GetTempFileName();
@@ -288,7 +295,7 @@ namespace Netimobiledevice.Lockdown
                 sslStream.AuthenticateAsClient(string.Empty, new X509CertificateCollection() { new X509Certificate2(cert.Export(X509ContentType.Pkcs12)) }, SslProtocols.None, false);
             }
             catch (AuthenticationException ex) {
-                logger.LogError(ex, "SSL authentication failed");
+                logger.LogError($"SSL authentication failed for host {host} : {ex}");
             }
 
             networkStream = sslStream;

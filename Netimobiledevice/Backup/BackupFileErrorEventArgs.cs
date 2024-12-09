@@ -10,6 +10,13 @@
         /// </summary>
         public bool Cancel { get; set; }
 
-        public BackupFileErrorEventArgs(BackupFile file) : base(file) { }
+#region TEC
+        public BackupFileErrorEventArgs(BackupFile file, string details) : base(file) // MEF: Added details
+        {
+            Details = details;
+        }
+#endregion
+
+        public string Details { get; set; }
     }
 }

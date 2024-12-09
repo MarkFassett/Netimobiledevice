@@ -96,7 +96,7 @@ namespace Netimobiledevice
         {
             ServiceConnection service = ServiceConnection.CreateUsingTcp(hostname, port, logger);
             TcpLockdownClient client = TcpLockdownClient.Create(service, identifier: identifier, label: label, localHostname: localHostname, pairRecord: pairRecord,
-                pairingRecordsCacheFolder: pairingRecordsCacheDir, pairTimeout: pairTimeout, autopair: autopair, port: port, hostname: hostname);
+                pairingRecordsCacheFolder: pairingRecordsCacheDir, pairTimeout: pairTimeout, autopair: autopair, port: port, hostname: hostname, logger: logger);
             return client;
         }
     }

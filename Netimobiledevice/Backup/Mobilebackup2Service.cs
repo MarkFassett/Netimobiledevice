@@ -54,7 +54,11 @@ namespace Netimobiledevice.Backup
         /// <summary>
         /// Event raised when there is some error during the backup.
         /// </summary>
-        public event EventHandler<ErrorEventArgs>? Error;
+        public event EventHandler<DetailedErrorEventArgs>? Error;
+        /// <summary>
+        /// Event raised when there is a none fatal error during the backup.
+        /// </summary>
+        public event EventHandler<DetailedErrorEventArgs>? Warning;
         /// <summary>
         /// Event raised when a file is received from the device.
         /// </summary>
@@ -281,6 +285,11 @@ namespace Netimobiledevice.Backup
             Error?.Invoke(sender, e);
         }
 
+        private void DebiceLink_Warning(object? sender, ErrorEventArgs e)
+        {
+            Warning?.Invoke(sender, e);
+        }
+
         private void DeviceLink_FileReceived(object? sender, BackupFileEventArgs e)
         {
             FileReceived?.Invoke(sender, e);
@@ -364,6 +373,7 @@ namespace Netimobiledevice.Backup
                 dl.BeforeReceivingFile += DeviceLink_BeforeReceivingFile;
                 dl.Completed += DeviceLink_Completed;
                 dl.Error += DeviceLink_Error;
+                dl.Warning += DeviceLink_Warning;
                 dl.FileReceived += DeviceLink_FileReceived;
                 dl.FileReceiving += DeviceLink_FileReceiving;
                 dl.FileTransferError += DeviceLink_FileTransferError;
@@ -383,12 +393,14 @@ namespace Netimobiledevice.Backup
                             await backupLock.AquireBackupLock(_internalCts.Token).ConfigureAwait(false);
 
                             // Create Info.plist
+                            var infoPlistStartTime = DateTime.Now;
                             string infoPlistPath = Path.Combine(deviceDirectory, "Info.plist");
                             DictionaryNode infoPlist = await CreateInfoPlist(afc, _internalCts.Token).ConfigureAwait(false);
                             using (FileStream fs = File.OpenWrite(infoPlistPath)) {
                                 byte[] infoPlistData = PropertyList.SaveAsByteArray(infoPlist, PlistFormat.Xml);
                                 await fs.WriteAsync(infoPlistData, _internalCts.Token).ConfigureAwait(false);
                             }
+                            Logger.LogDebug($"Creating Info.plist took {DateTime.Now - infoPlistStartTime}");
 
                             // Create Status.plist file if doesn't exist.
                             string statusPlistPath = Path.Combine(deviceDirectory, "Status.plist");
@@ -477,6 +489,7 @@ namespace Netimobiledevice.Backup
                 dl.BeforeReceivingFile += DeviceLink_BeforeReceivingFile;
                 dl.Completed += DeviceLink_Completed;
                 dl.Error += DeviceLink_Error;
+                dl.Warning += DeviceLink_Warning;
                 dl.FileReceived += DeviceLink_FileReceived;
                 dl.FileReceiving += DeviceLink_FileReceiving;
                 dl.FileTransferError += DeviceLink_FileTransferError;

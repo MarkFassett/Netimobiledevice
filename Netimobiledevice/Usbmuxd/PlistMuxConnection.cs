@@ -170,7 +170,7 @@ namespace Netimobiledevice.Usbmuxd
                 DictionaryNode dict = entry.AsDictionaryNode();
                 string messageType = dict["MessageType"].AsStringNode().Value;
                 if (messageType == "Attached") {
-                    AddDevice(new UsbmuxdDevice(dict["DeviceID"].AsIntegerNode(), dict["Properties"].AsDictionaryNode()));
+                    AddDevice(new UsbmuxdDevice(dict["DeviceID"].AsIntegerNode(), dict["Properties"].AsDictionaryNode(), logger:logger));
                 }
                 else if (messageType == "Detached") {
                     RemoveDevice(dict["DeviceID"].AsIntegerNode().Value);

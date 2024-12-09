@@ -14,6 +14,7 @@ namespace Netimobiledevice.Lockdown
             : base(service, hostId, identifier, label, systemBuid, pairRecord, pairingRecordsCacheDirectory, port, logger)
         {
             _usbmuxAddress = usbmuxAddress;
+            _usbmuxdConnectionType = UsbmuxdConnectionType.Usb;
         }
 
         public override ServiceConnection CreateServiceConnection(ushort port)

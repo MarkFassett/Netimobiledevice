@@ -14,6 +14,10 @@ namespace Netimobiledevice.Usbmuxd
     {
         protected const int DEFAULT_CONNECTION_TIMEOUT = 5000;
 
+#region TEC
+        internal static event EventHandler<UsbmuxErrorEventArgs?> SocketError;
+#endregion
+
         /// <summary>
         /// After initiating the "Connect" packet, this same socket will be used to transfer data into the service
         /// residing inside the target device. when this happens, we can no longer send/receive control commands to
@@ -23,7 +27,7 @@ namespace Netimobiledevice.Usbmuxd
         /// <summary>
         /// The internal logger
         /// </summary>
-        private readonly ILogger logger;
+        protected readonly ILogger logger;
 
         protected int connectionTimeout = DEFAULT_CONNECTION_TIMEOUT;
 
@@ -142,12 +146,26 @@ namespace Netimobiledevice.Usbmuxd
             int sent = Sock.Send(header.GetBytes());
             if (sent != Marshal.SizeOf(header)) {
                 logger.LogError($"ERROR: could not send packet header");
+
+#region TEC
+                SocketError?.Invoke(this, new UsbmuxErrorEventArgs($"Could not send packet header : rval = {sent}"));
+#endregion
                 return -1;
             }
 
             if (payload != null && payload.Length > 0) {
-                int res = Sock.Send(payload);
-                sent += res;
+#region TEC
+                int res = 0;
+                try
+                {
+                    res = Sock.Send(payload);
+                    sent += res;
+                }
+                catch (SocketException ex)
+                {
+                    SocketError?.Invoke(this, new UsbmuxErrorEventArgs(ex, $"Failed to send {payload.Length} bytes - res = {res}" ));
+                }
+#endregion
             }
             if (sent != header.Length) {
                 logger.LogError("ERROR: could not send whole packet (sent {sent} of {length})", sent, header.Length);

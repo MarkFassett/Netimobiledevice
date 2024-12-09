@@ -2,6 +2,7 @@
 using Netimobiledevice.Lockdown.Pairing;
 using Netimobiledevice.Plist;
 using System.IO;
+using Netimobiledevice.Usbmuxd;
 
 namespace Netimobiledevice.Lockdown
 {
@@ -14,6 +15,7 @@ namespace Netimobiledevice.Lockdown
             ILogger? logger = null) : base(service, hostId, identifier, label, systemBuid, pairRecord, pairingRecordsCacheDirectory, port, logger)
         {
             _hostname = hostname;
+            _usbmuxdConnectionType = UsbmuxdConnectionType.Network;
         }
 
         public override ServiceConnection CreateServiceConnection(ushort port)

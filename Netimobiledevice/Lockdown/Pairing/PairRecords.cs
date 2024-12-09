@@ -40,10 +40,11 @@ namespace Netimobiledevice.Lockdown.Pairing
             return null;
         }
 
-        public static DirectoryInfo? CreatePairingRecordsCacheFolder(string pairingRecordsCacheFolder = "")
+        public static DirectoryInfo CreatePairingRecordsCacheFolder(string pairingRecordsCacheFolder = "", ILogger? logger = null)
         {
             if (string.IsNullOrEmpty(pairingRecordsCacheFolder)) {
-                pairingRecordsCacheFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Netimobiledevice");
+                logger?.LogInformation("Using default save folder");
+                pairingRecordsCacheFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Netimobiledevice");
             }
             try {
                 Directory.CreateDirectory(pairingRecordsCacheFolder);

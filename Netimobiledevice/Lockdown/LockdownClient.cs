@@ -34,7 +34,8 @@ namespace Netimobiledevice.Lockdown
         private ushort _port;
         private string _sessionId;
         private string _systemBuid;
-        private readonly UsbmuxdConnectionType _usbmuxdConnectionType;
+        protected UsbmuxdConnectionType _usbmuxdConnectionType;
+        public UsbmuxdConnectionType ConnectionType => _usbmuxdConnectionType;
 
         protected readonly DirectoryInfo? _pairingRecordsCacheDirectory;
         /// <summary>
@@ -42,6 +43,10 @@ namespace Netimobiledevice.Lockdown
         /// </summary>
         protected DictionaryNode? _pairRecord;
         protected readonly ServiceConnection? _service;
+
+
+
+        public event EventHandler<UsbmuxErrorEventArgs?> SocketError;
 
         public string DeviceClass { get; private set; } = LockdownDeviceClass.UNKNOWN;
 
@@ -80,9 +85,12 @@ namespace Netimobiledevice.Lockdown
         /// <param name="pair_record">Use this pair record instead of the default behavior (search in host/create our own)</param>
         /// <param name="pairingRecordsCacheDirectory">Use the following location to search and save pair records</param>
         /// <param name="port">lockdownd service port</param>
+        /// <param name="logger"></param>
         protected LockdownClient(ServiceConnection service, string hostId, string identifier = "", string label = DEFAULT_CLIENT_NAME, string systemBuid = SYSTEM_BUID,
             DictionaryNode? pairRecord = null, DirectoryInfo? pairingRecordsCacheDirectory = null, ushort port = SERVICE_PORT, ILogger? logger = null) : base()
         {
+         
+            UsbmuxConnection.SocketError += SocketError;
             _logger = logger ?? NullLogger.Instance;
             _service = service;
             Identifier = identifier;
@@ -101,7 +109,10 @@ namespace Netimobiledevice.Lockdown
 
             _allValues = GetValue()?.AsDictionaryNode() ?? new DictionaryNode();
 
-            Udid = _allValues["UniqueDeviceID"].AsStringNode().Value;
+            if (_allValues.TryGetValue("UniqueDeviceID", out var value)) {
+                Udid = value.AsStringNode().Value;
+            }
+            
             ProductType = _allValues["ProductType"].AsStringNode().Value;
 
             if (_allValues.TryGetValue("DevicePublicKey", out PropertyNode? devicePublicKeyNode)) {
@@ -152,8 +163,13 @@ namespace Netimobiledevice.Lockdown
 
             DictionaryNode response = _service?.SendReceivePlist(message)?.AsDictionaryNode() ?? new DictionaryNode();
 
-            if (verifyRequest && response["Request"].AsStringNode().Value != request) {
-                throw new LockdownException($"Incorrect response returned, as got {response["Request"].AsStringNode().Value} instead of {request}");
+            if (verifyRequest && response.TryGetValue("Request", out var value)) {
+                if (value.AsStringNode().Value != request) {
+                    Logger.LogDebug($"Request response did not contain our expected value {value}: {response}");
+                    throw new LockdownException($"Incorrect response returned, as got {value} instead of {request}");
+                }
+            } else if (verifyRequest) {
+                throw new LockdownException("Response did not contain the key \"Request\"");
             }
 
             if (response.TryGetValue("Error", out PropertyNode? errorNode)) {
@@ -304,7 +320,7 @@ namespace Netimobiledevice.Lockdown
             }
 
             if (startSession.ContainsKey("EnableSessionSSL") && startSession["EnableSessionSSL"].AsBooleanNode().Value) {
-                _service?.StartSSL(_pairRecord["HostCertificate"].AsDataNode().Value, _pairRecord["HostPrivateKey"].AsDataNode().Value);
+                _service?.StartSSL(_pairRecord["HostCertificate"].AsDataNode().Value, _pairRecord["HostPrivateKey"].AsDataNode().Value, _hostId);
             }
 
             IsPaired = true;
@@ -355,6 +371,8 @@ namespace Netimobiledevice.Lockdown
 
         public void Dispose()
         {
+
+            UsbmuxConnection.SocketError -= SocketError;
             _service?.Dispose();
             GC.SuppressFinalize(this);
         }
